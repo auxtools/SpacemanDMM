@@ -804,7 +804,7 @@ impl<'a> ConstantFolder<'a> {
                 },
             },
             Term::NewMiniExpr { .. } => return Err(self.error("non-constant new expression")),
-            Term::List(vec) => Constant::List(self.arguments(vec)?),
+            Term::List(vec) | Term::Alist(vec) => Constant::List(self.arguments(vec)?),
             Term::Call(ident, args) => match ident.as_str() {
                 // constructors which remain as they are
                 "matrix" => Constant::Call(ConstFn::Matrix, self.arguments(args)?),

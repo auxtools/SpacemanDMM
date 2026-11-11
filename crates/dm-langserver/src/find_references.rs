@@ -592,7 +592,7 @@ impl<'o> WalkProc<'o> {
                 StaticType::None
             },
 
-            Term::List(args) => {
+            Term::List(args) | Term::Alist(args) => {
                 // TODO: use /proc/list
                 self.visit_arguments(location, args);
                 StaticType::List {

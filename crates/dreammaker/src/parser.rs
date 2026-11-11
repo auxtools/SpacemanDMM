@@ -2479,7 +2479,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             },
 
             Token::Ident(i, _) if *i == ident!("alist") => match self.arguments(&[], &ident!("alist"))? {
-                Some(args) => Term::List(args),
+                Some(args) => Term::Alist(args),
                 None => {
                     belongs_to.push(i.clone());
                     self.annotate(start, || Annotation::UnscopedVar(i.clone()));

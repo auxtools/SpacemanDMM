@@ -2732,6 +2732,10 @@ impl<'o, 's> AnalyzeProc<'o, 's> {
                 self.visit_arguments(location, args, local_vars);
                 Analysis::from_static_type(self.objtree.expect("/list"))
             },
+            Term::Alist(args) => {
+                self.visit_arguments(location, args, local_vars);
+                Analysis::from_static_type(self.objtree.expect("/alist"))
+            },
             Term::Input {
                 args,
                 input_type,

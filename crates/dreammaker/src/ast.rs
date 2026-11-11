@@ -1259,6 +1259,8 @@ pub enum Term {
     },
     /// A `list` call. Associations are represented by assignment expressions.
     List(Box<[Expression]>),
+    /// An `alist()` constructor, distinct from `list()`.
+    Alist(Box<[Expression]>),
     /// An `input` call.
     Input {
         args: Box<[Expression]>,
@@ -1308,7 +1310,7 @@ impl Term {
             Term::NewImplicit { .. } => Some(true),
             Term::NewPrefab { .. } => Some(true),
             Term::NewMiniExpr { .. } => Some(true),
-            Term::List(_) => Some(true),
+            Term::List(_) | Term::Alist(_) => Some(true),
 
             // Truthy if any of the literal parts are non-empty.
             // Otherwise, don't try to determine the content of the parts.
