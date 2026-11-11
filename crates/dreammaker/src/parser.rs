@@ -1828,6 +1828,14 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             require!(self.exact(Token!['(']));
             let expr = require!(self.expression());
             require!(self.exact(Token![')']));
+            // DreamMaker accepts a switch with no body as an empty switch.
+            if let Some(()) = self.statement_terminator()? {
+                return spanned(Statement::Switch {
+                    input: Box::new(expr),
+                    cases: Default::default(),
+                    default: None,
+                });
+            }
             require!(self.exact(Token!['{']));
             let mut cases = Vec::new();
             let default = loop {
