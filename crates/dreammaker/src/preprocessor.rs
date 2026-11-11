@@ -1074,6 +1074,12 @@ impl<'ctx> Preprocessor<'ctx> {
                             self.multiple_locations
                                 .insert(pragma_use_loc.file, pragma_use_loc);
                         }
+                        // Consume the whole pragma line; trailing words are not source code.
+                        while let Some(lt) = self.inner_next() {
+                            if lt.token == Token!['\n'] {
+                                break;
+                            }
+                        }
                     },
                     // none of this other stuff should even exist
                     other => {
@@ -1116,7 +1122,13 @@ impl<'ctx> Preprocessor<'ctx> {
 
                 // substitute special macros
                 if *ident == ident!("__FILE__") {
-                    let path = self.include_stack.top_file_path().to_str().unwrap();
+                    // Resolve relative to the project directory even when the .dme path is absolute.
+                    let path = self.include_stack.top_file_path();
+                    let path = path
+                        .strip_prefix(self.env_file.parent().unwrap())
+                        .unwrap_or(path)
+                        .to_str()
+                        .unwrap();
                     let dm_path: String = cfg_select! {
                         windows => path.replace("\\", "/"),
                         _ => path.to_string()
@@ -1204,30 +1216,51 @@ impl<'ctx> Preprocessor<'ctx> {
 
                         self.annotate_macro(ident, location, Some(docs));
 
-                        // read arguments
+                        // Read arguments and source spans for stringification.
                         let mut args = Vec::new();
+                        let mut arg_spans = Vec::new();
+                        // Retain whitespace before each argument's comma or closing parenthesis.
+                        let mut arg_trailing = Vec::new();
                         let mut this_arg = Vec::new();
+                        let mut this_spans = Vec::new();
                         let mut parens = 0;
                         loop {
-                            let token = next!();
+                            let Some(located) = self.inner_next() else {
+                                return Err(self.error("unexpected EOF"));
+                            };
+                            let span = (located.start, located.end);
+                            let token = located.token;
                             match token {
                                 Token!['('] => {
                                     parens += 1;
                                     this_arg.push(token);
+                                    this_spans.push(span);
                                 },
                                 Token![')'] => {
                                     if parens == 0 {
+                                        arg_trailing.push(trailing_gap(&this_spans, span.0));
                                         args.push(this_arg);
+                                        arg_spans.push(this_spans);
+                                        // Attribute the expansion to the closing parenthesis,
+                                        // matching DreamMaker's __LINE__.
+                                        self.last_input_loc = span.0;
                                         break;
                                     }
                                     parens -= 1;
                                     this_arg.push(token);
+                                    this_spans.push(span);
                                 },
                                 Token![,] if parens == 0 => {
+                                    arg_trailing.push(trailing_gap(&this_spans, span.0));
                                     args.push(this_arg);
+                                    arg_spans.push(this_spans);
                                     this_arg = Vec::new();
+                                    this_spans = Vec::new();
                                 },
-                                _ => this_arg.push(token),
+                                _ => {
+                                    this_arg.push(token);
+                                    this_spans.push(span);
+                                },
                             }
                         }
 
@@ -1244,6 +1277,25 @@ impl<'ctx> Preprocessor<'ctx> {
                             return Err(self.error("wrong number of arguments to macro call"));
                         }
 
+                        // DreamMaker rescans expanded text. Add internal line breaks from
+                        // earlier substituted arguments to the closing-parenthesis line;
+                        // exclude whitespace surrounding each argument.
+                        let arg_breaks: Vec<u32> = args
+                            .iter()
+                            .map(|arg| {
+                                let start = arg.iter().position(|t| *t != Token!['\n']);
+                                let end = arg.iter().rposition(|t| *t != Token!['\n']);
+                                match (start, end) {
+                                    (Some(start), Some(end)) => arg[start..=end]
+                                        .iter()
+                                        .filter(|t| **t == Token!['\n'])
+                                        .count() as u32,
+                                    _ => 0,
+                                }
+                            })
+                            .collect();
+                        let mut breaks = 0;
+
                         // paste them into the expansion
                         let mut expansion = VecDeque::new();
                         let mut input = subst.iter().cloned();
@@ -1252,7 +1304,12 @@ impl<'ctx> Preprocessor<'ctx> {
                                 // just an ident = expand it
                                 Token::Ident(ident, ws) => {
                                     match params.iter().position(|x| *x == ident) {
-                                        Some(i) => expansion.extend(args[i].iter().cloned()),
+                                        Some(i) => {
+                                            breaks += arg_breaks[i];
+                                            expansion.extend(args[i].iter().cloned())
+                                        },
+                                        None if ident == ident!("__LINE__") && breaks > 0 => expansion
+                                            .push_back(Token::Int((self.last_input_loc.line + breaks) as i32)),
                                         None => expansion.push_back(Token::Ident(ident, ws)),
                                     }
                                 },
@@ -1330,13 +1387,45 @@ impl<'ctx> Preprocessor<'ctx> {
                                     Some(Token::Ident(argname, _)) => {
                                         match params.iter().position(|x| *x == argname) {
                                             Some(i) => {
+                                                // Preserve source spacing during stringification.
+                                                let spans = arg_spans.get(i).filter(|s| s.len() == args[i].len());
                                                 let mut string = String::new();
-                                                for each in &args[i] {
+                                                for (j, each) in args[i].iter().enumerate() {
                                                     use std::fmt::Write;
-                                                    if !string.is_empty() {
-                                                        string.push(' ');
+                                                    if j > 0 {
+                                                        let gap = match spans {
+                                                            // Expanded tokens lack source spans; estimate their spacing.
+                                                            Some(spans) if spans[j - 1].0 == spans[j - 1].1 || spans[j].0 == spans[j].1 => {
+                                                                let before = if j >= 2 { args[i].get(j - 2) } else { None };
+                                                                guessed_space(before, &args[i][j - 1], each) as usize
+                                                            },
+                                                            Some(spans) => {
+                                                                let (prev_end, start) = (spans[j - 1].1, spans[j].0);
+                                                                if prev_end.file == start.file && prev_end.line == start.line {
+                                                                    start.column.saturating_sub(prev_end.column) as usize
+                                                                } else {
+                                                                    1
+                                                                }
+                                                            },
+                                                            None => 1,
+                                                        };
+                                                        string.extend(std::iter::repeat(' ').take(gap));
                                                     }
-                                                    _ = write!(string, "{each}");
+                                                    // Use original literal spelling and raw-string delimiters.
+                                                    let written = match (each, spans) {
+                                                        (Token::Int(_) | Token::Float(_) | Token::String(_, StringKind::Raw), Some(spans)) => {
+                                                            self.context.written_text(spans[j].0)
+                                                        },
+                                                        _ => None,
+                                                    };
+                                                    match written {
+                                                        Some(text) => string.push_str(&text),
+                                                        None => _ = write!(string, "{each}"),
+                                                    }
+                                                }
+                                                if spans.is_some() {
+                                                    let trailing = arg_trailing.get(i).copied().unwrap_or(0);
+                                                    string.extend(std::iter::repeat(' ').take(trailing));
                                                 }
                                                 expansion.push_back(Token::String(
                                                     string.into(),
@@ -1394,6 +1483,47 @@ impl<'ctx> Preprocessor<'ctx> {
         }
         self.push_output(read);
         Ok(())
+    }
+}
+
+/// Estimate spacing for tokens without source spans: preserve identifier
+/// spacing flags, separate commas, and space binary operators.
+fn guessed_space(before: Option<&Token>, prev: &Token, next: &Token) -> bool {
+    // Distinguish subtraction from unary minus by the preceding operand.
+    fn operand(t: &Token) -> bool {
+        matches!(
+            t,
+            Token::Ident(..) | Token::Int(_) | Token::Float(_) | Token::String(..) | Token::Punct(crate::lexer::Punctuation::RParen | crate::lexer::Punctuation::RBracket)
+        )
+    }
+    let minus = Token::Punct(crate::lexer::Punctuation::Sub);
+    if *next == minus && operand(prev) {
+        return true;
+    }
+    if *prev == minus {
+        return before.is_some_and(operand);
+    }
+    fn binary(t: &Token) -> bool {
+        use crate::lexer::Punctuation::*;
+        matches!(
+            t,
+            Token::Punct(
+                Or | And | Eq | NotEq | Less | Greater | LessEq | GreaterEq | Add | Mul | Slash | Mod | BitOr
+                    | BitXor | LShift | RShift | Assign | AddAssign | SubAssign | MulAssign | DivAssign
+                    | QuestionMark | Colon
+            )
+        )
+    }
+    matches!(prev, Token::Ident(_, true)) || matches!(prev, Token::Punct(crate::lexer::Punctuation::Comma)) || binary(prev) || binary(next)
+}
+
+/// Count spaces from the final span to `next` on the same line.
+fn trailing_gap(spans: &[(Location, Location)], next: Location) -> usize {
+    match spans.last() {
+        Some((_, end)) if end.file == next.file && end.line == next.line => {
+            next.column.saturating_sub(end.column) as usize
+        },
+        _ => 0,
     }
 }
 

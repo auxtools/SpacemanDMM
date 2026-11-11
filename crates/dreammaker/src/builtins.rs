@@ -15,7 +15,7 @@ pub fn default_defines(defines: &mut DefineMap) {
     use crate::lexer::Token::{self, *};
     let location = Location::BUILTINS;
 
-    // #define EXCEPTION(value) new /exception(value)
+    // #define EXCEPTION(value) new /exception(value, __FILE__, __LINE__)
     defines.insert(
         ident!("EXCEPTION"),
         Define {
@@ -28,6 +28,10 @@ pub fn default_defines(defines: &mut DefineMap) {
                 Ident(ident!("exception"), false),
                 Token!['('],
                 Ident(ident!("value"), false),
+                Token![,],
+                Ident(ident!("__FILE__"), false),
+                Token![,],
+                Ident(ident!("__LINE__"), false),
                 Token![')'],
             ],
             docs: Default::default(),

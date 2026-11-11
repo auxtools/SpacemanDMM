@@ -1371,12 +1371,13 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
                 default: None,
                 in_list: None,
                 location: self.location,
+                absolute: false,
             });
         }
 
         // `name` or `obj/name` or `var/obj/name` or ...
         let leading_loc = self.updated_location();
-        let (_absolute, mut path) = leading!(self.tree_path(true));
+        let (absolute, mut path) = leading!(self.tree_path(true));
         let name = match path.pop() {
             Some(name) => name,
             None => {
@@ -1424,6 +1425,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             default,
             in_list,
             location,
+            absolute,
         })
     }
 
@@ -1625,12 +1627,50 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
 
             // three-pronged loop form ("for loop")
             if let Some(()) = self.semicolon()? {
-                // for(init; test; [inc])
-                let test = self.expression()?;
-                let inc = match self.semicolon()? {
+                // DreamMaker accepts both for(init; test; inc) and for(init; test, inc).
+                let first_empty = init.is_none();
+                let mut init = init;
+                let mut test = self.expression()?;
+                let mut second_separator = true;
+                let mut inc = match self.semicolon()? {
                     Some(()) => self.simple_statement(false, vars)?,
-                    None => None,
+                    None => match self.comma()? {
+                        Some(()) => self.simple_statement(false, vars)?,
+                        None => {
+                            second_separator = false;
+                            None
+                        },
+                    },
                 };
+                // DreamMaker treats `for (a; )` as `for (a)`. Two semicolons
+                // are required for an unconditional loop.
+                if !first_empty && test.is_none() && !second_separator {
+                    return Err(self.error("ambiguous for (x; ): DreamMaker treats it as for (x); use two semicolons for an unconditional loop"));
+                }
+                // DreamMaker drops an empty initial clause before a semicolon:
+                // `for (; a; b)` becomes `for (a; b)`, initializing with a and
+                // testing b. With commas, `for (, a, b)` keeps the empty clause.
+                if first_empty && (test.is_some() || inc.is_some()) {
+                    let (Some(first), Some(second)) = (test, inc) else {
+                        // `for (; a; )` becomes `for (a)`: world iteration for a variable,
+                        // or no code (including no body) for other expressions.
+                        return Err(self.error(
+                            "ambiguous for (; x; ): DreamMaker treats it as for (x); use while (x) for a conditional loop",
+                        ));
+                    };
+                    let Statement::Expr(second) = second else {
+                        return Err(self.error("invalid for (; a; b): DreamMaker treats b as the condition"));
+                    };
+                    init = Some(Statement::Expr(first));
+                    test = Some(second);
+                    inc = match self.comma()? {
+                        Some(()) => self.simple_statement(false, vars)?,
+                        None => match self.semicolon()? {
+                            Some(()) => self.simple_statement(false, vars)?,
+                            None => None,
+                        },
+                    };
+                }
                 require!(self.exact(Token![')']));
                 spanned(Statement::ForLoop {
                     init: init.map(Box::new),
@@ -1642,9 +1682,13 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             } else if let Some(()) = self.comma()? {
                 // for(init, test [, inc])
                 let test = self.expression()?;
+                // DreamMaker also accepts for(init, test; inc).
                 let inc = match self.comma()? {
                     Some(()) => self.simple_statement(false, vars)?,
-                    None => None,
+                    None => match self.semicolon()? {
+                        Some(()) => self.simple_statement(false, vars)?,
+                        None => None,
+                    },
                 };
                 // Increment exists
                 if inc.is_some() {
@@ -1781,7 +1825,8 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
                     // for(var/a as obj
                     Some(require!(self.input_type()))
                 } else {
-                    None
+                    // The type clause was already parsed as a potential key type.
+                    key_input_type
                 };
 
                 let in_list = if let Some(()) = self.exact(Token![in])? {
@@ -1825,6 +1870,14 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             require!(self.exact(Token!['(']));
             let expr = require!(self.expression());
             require!(self.exact(Token![')']));
+            // DreamMaker accepts a switch with no body as an empty switch.
+            if let Some(()) = self.statement_terminator()? {
+                return spanned(Statement::Switch {
+                    input: Box::new(expr),
+                    cases: Default::default(),
+                    default: None,
+                });
+            }
             require!(self.exact(Token!['{']));
             let mut cases = Vec::new();
             let default = loop {
@@ -2478,7 +2531,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             },
 
             Token::Ident(i, _) if *i == ident!("alist") => match self.arguments(&[], &ident!("alist"))? {
-                Some(args) => Term::List(args),
+                Some(args) => Term::Alist(args),
                 None => {
                     belongs_to.push(i.clone());
                     self.annotate(start, || Annotation::UnscopedVar(i.clone()));
@@ -2660,6 +2713,9 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             },
 
             // term :: str_lit | num_lit
+            // Store raw strings in the same escaped representation as normal strings:
+            // @"a\b" becomes "a\\b".
+            Token::String(val, crate::lexer::StringKind::Raw) => Term::String(escape_raw(&val).into()),
             Token::String(val, _) => Term::String(val),
             Token::Resource(val) => {
                 self.annotate_precise(start..start.add_columns(2 + val.len() as u16), || Annotation::Resource((*val).into()));
@@ -2850,20 +2906,27 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
         let start = self.location;
 
         let mut arguments = Vec::new();
-        // TODO: account for implicit nulls again
-        let result = self.separated(Token![,], Token![')'], Some(()), |this| {
-            let arg_start = this.location;
-            let result = this.expression();
-            this.annotate(arg_start, || Annotation::ProcArgument(arguments.len()));
-            match result {
-                Ok(Some(expr)) => {
-                    arguments.push(expr);
-                    SUCCESS
-                },
-                Ok(None) => Ok(None),
-                Err(e) => Err(e),
+        // An empty argument, as in `f(a, , b)`, is null
+        let mut comma_legal = false;
+        let result: Status<()> = loop {
+            if let Some(()) = self.exact(Token![')'])? {
+                break SUCCESS;
+            } else if let Some(()) = self.exact(Token![,])? {
+                if comma_legal {
+                    comma_legal = false;
+                } else {
+                    arguments.push(Expression::from(Term::Null));
+                }
+            } else if !comma_legal {
+                let arg_start = self.location;
+                let result = self.expression();
+                self.annotate(arg_start, || Annotation::ProcArgument(arguments.len()));
+                arguments.push(self.require(result)?);
+                comma_legal = true;
+            } else {
+                break Err(self.parse_error());
             }
-        });
+        };
         let end = self.location; // location of the closing parenthesis
         self.annotate_precise(start..end, || {
             Annotation::ProcArguments(parents.to_owned(), proc.clone(), arguments.len())
@@ -2969,4 +3032,16 @@ fn reconstruct_path(
         result.push(Ident::from_nonstatic(last));
     }
     result
+}
+
+/// Escape raw contents for the AST's normal-string representation.
+fn escape_raw(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if matches!(ch, '\\' | '"' | '[') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
 }

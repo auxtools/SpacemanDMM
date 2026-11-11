@@ -1359,6 +1359,7 @@ impl ObjectTreeBuilder {
                 default: None,
                 in_list: None,
                 location: Location::BUILTINS,
+                absolute: false,
             })
             .collect();
         let (parent, mut proc_name) = self.get_from_path(location, &mut path, len).unwrap();

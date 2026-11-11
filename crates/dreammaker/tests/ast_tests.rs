@@ -374,3 +374,66 @@ fn for_key_value_with_as() {
         },
     );
 }
+
+#[test]
+fn for_with_an_empty_first_part() {
+    // An empty initial clause before a semicolon is discarded.
+    with_code(
+        "
+/proc/test(a, b)
+    for (; a < 5; a++)
+        b++
+    for (, a < 5, a++)
+        b++
+    for (;;)
+        break
+    for (; a < 5; a++, b++)
+        b++
+    ",
+        |context, tree| {
+            context.assert_success();
+
+            let proc = tree.root().get_proc("test").unwrap();
+            let code = proc.get().code.as_ref().unwrap();
+            let parts = |n: usize| match &code[n].elem {
+                Statement::ForLoop { init, test, inc, .. } => (init.is_some(), test.is_some(), inc.is_some()),
+                Statement::ForInfinite { .. } => (false, false, false),
+                other => panic!("expected ForLoop, got {other:?}"),
+            };
+            // Parsed as for (a < 5; a++): initialize with the comparison and test a++.
+            assert_eq!(parts(0), (true, true, false));
+            // Comma separators preserve the empty initializer.
+            assert_eq!(parts(1), (false, true, true));
+            assert_eq!(parts(2), (false, false, false));
+            // Parsed as for (a < 5; a++; b++).
+            assert_eq!(parts(3), (true, true, true));
+        },
+    );
+    // Reject the ambiguous for (a) form produced by the empty clause.
+    with_code(
+        "
+/proc/test(a, b)
+    for (; a < 5; )
+        b++
+    ",
+        |context, _| assert!(!context.errors().is_empty()),
+    );
+    with_code(
+        "
+/proc/test(a, b)
+    for (a = 5; )
+        b++
+    ",
+        |context, _| assert!(!context.errors().is_empty()),
+    );
+    with_code(
+        "
+/proc/test(a, b)
+    for (a = 5; ; )
+        break
+    for (a = 5; ; a++)
+        break
+    ",
+        |context, _| context.assert_success(),
+    );
+}

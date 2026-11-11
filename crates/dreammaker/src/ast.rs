@@ -1259,6 +1259,8 @@ pub enum Term {
     },
     /// A `list` call. Associations are represented by assignment expressions.
     List(Box<[Expression]>),
+    /// An `alist()` constructor, distinct from `list()`.
+    Alist(Box<[Expression]>),
     /// An `input` call.
     Input {
         args: Box<[Expression]>,
@@ -1308,7 +1310,7 @@ impl Term {
             Term::NewImplicit { .. } => Some(true),
             Term::NewPrefab { .. } => Some(true),
             Term::NewMiniExpr { .. } => Some(true),
-            Term::List(_) => Some(true),
+            Term::List(_) | Term::Alist(_) => Some(true),
 
             // Truthy if any of the literal parts are non-empty.
             // Otherwise, don't try to determine the content of the parts.
@@ -1441,6 +1443,9 @@ pub struct Parameter {
     pub default: Option<Expression>,
     pub in_list: Option<Expression>,
     pub location: Location,
+    /// Written with a leading slash, e.g. `/obj/x`. BYOND does not allocate
+    /// a parameter slot for this form.
+    pub absolute: bool,
 }
 
 impl fmt::Display for Parameter {
@@ -1516,15 +1521,17 @@ impl VarTypeBuilder {
 
 impl FromIterator<Ident> for VarTypeBuilder {
     fn from_iter<T: IntoIterator<Item = Ident>>(iter: T) -> Self {
+        // DreamMaker accepts declaration flags anywhere in the path:
+        // `var/list/static/x` declares a static list.
         let mut flags = VarTypeFlags::default();
         let type_path = iter
             .into_iter()
-            .skip_while(|p| {
+            .filter(|p| {
                 if let Some(flag) = VarTypeFlags::from_ident(p) {
                     flags |= flag;
-                    true
-                } else {
                     false
+                } else {
+                    true
                 }
             })
             .collect();
