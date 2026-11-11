@@ -1039,8 +1039,16 @@ impl<'ctx> Lexer<'ctx> {
         }
     }
 
-    fn read_number(&mut self, first: u8) -> Token {
+    /// Read a number token and its optional original source text.
+    fn read_number(&mut self, first: u8) -> (Token, Option<String>) {
+        let start = self.input.offset - 1;
         let (integer, radix, buf) = self.read_number_inner(first);
+        let end = self.input.offset - self.next.is_some() as usize;
+        let text = self.input.inner.get(start..end).map(|t| from_utf8_or_latin1_borrowed(t).into_owned());
+        (self.number_token(integer, radix, buf), text)
+    }
+
+    fn number_token(&mut self, integer: bool, radix: u32, buf: Cow<'static, str>) -> Token {
         if integer {
             let original_error = match i32::from_str_radix(&buf, radix) {
                 Ok(val) => return Token::Int(val),
@@ -1193,9 +1201,10 @@ impl<'ctx> Lexer<'ctx> {
         }
     }
 
-    fn read_raw_string_inner(&mut self, terminator: &[u8]) -> Token {
+    fn read_raw_string_inner(&mut self, terminator: &[u8]) -> (Token, Vec<u8>) {
         let start_loc = self.location();
         let mut buf = Vec::new();
+        let mut terminated = false;
         loop {
             match self.next() {
                 Some(ch) => buf.push(ch),
@@ -1207,19 +1216,30 @@ impl<'ctx> Lexer<'ctx> {
             if buf.ends_with(terminator) {
                 let len = buf.len() - terminator.len();
                 buf.truncate(len);
+                terminated = true;
                 break;
             }
         }
-        Token::String(Ident::from(from_utf8_or_latin1(buf)), StringKind::Raw)
+        let mut written = buf.clone();
+        if terminated {
+            written.extend_from_slice(terminator);
+        }
+        (Token::String(Ident::from(from_utf8_or_latin1(buf)), StringKind::Raw), written)
     }
 
-    fn read_raw_string(&mut self) -> Token {
+    /// Read a raw string and its source text beginning at `@`.
+    fn read_raw_string(&mut self) -> (Token, String) {
+        let (token, written) = self.read_raw_string_body();
+        (token, from_utf8_or_latin1([b"@".as_slice(), &written].concat()))
+    }
+
+    fn read_raw_string_body(&mut self) -> (Token, Vec<u8>) {
         // We just got the '@'. Let's see what the next character is.
         match self.next() {
             // @<LF> - error
             Some(b'\n') | None => {
                 self.error("unterminated raw string").register(self.context);
-                Token::empty_string()
+                (Token::empty_string(), vec![])
             },
             // @(<terminator string>)<string><terminator string> - no LF in contents
             Some(b'(') => {
@@ -1232,28 +1252,36 @@ impl<'ctx> Lexer<'ctx> {
                         None => {
                             self.error("unterminated raw string terminator")
                                 .register(self.context);
-                            return Token::empty_string();
+                            return (Token::empty_string(), vec![]);
                         },
                     }
                 }
                 if terminator.is_empty() {
                     self.error("empty raw string terminator")
                         .register(self.context);
-                    return Token::empty_string();
+                    return (Token::empty_string(), vec![]);
                 }
-                self.read_raw_string_inner(&terminator)
+                let (token, rest) = self.read_raw_string_inner(&terminator);
+                (token, [b"(".as_slice(), &terminator, b")", &rest].concat())
             },
             Some(b'{') => match self.next() {
                 // @{"<string>"} - LF allowed in contents
-                Some(b'"') => self.read_raw_string_inner(b"\"}"),
+                Some(b'"') => {
+                    let (token, rest) = self.read_raw_string_inner(b"\"}");
+                    (token, [b"{\"".as_slice(), &rest].concat())
+                },
                 // @{<not ">{ -
                 other => {
                     self.put_back(other);
-                    self.read_raw_string_inner(b"{")
+                    let (token, rest) = self.read_raw_string_inner(b"{");
+                    (token, [b"{".as_slice(), &rest].concat())
                 },
             },
             // @<terminator char><string><terminator char>
-            Some(terminator) => self.read_raw_string_inner(&[terminator]),
+            Some(terminator) => {
+                let (token, rest) = self.read_raw_string_inner(&[terminator]);
+                (token, [&[terminator][..], &rest].concat())
+            },
         }
     }
 
@@ -1427,7 +1455,13 @@ impl<'ctx> Iterator for Lexer<'ctx> {
                 },
                 Some(v) => Some(locate!(Token::Punct(v))),
                 None => match first {
-                    b'0'..=b'9' => Some(locate!(self.read_number(first))),
+                    b'0'..=b'9' => {
+                        let (token, text) = self.read_number(first);
+                        if text.as_deref().is_some_and(|t| t != token.to_string()) {
+                            self.context.note_written_text(start, &text.unwrap());
+                        }
+                        Some(locate!(token))
+                    },
                     b'_' | b'a'..=b'z' | b'A'..=b'Z' => {
                         let (ident, ws) = self.read_ident(first);
                         if self.directive == Directive::Hash {
@@ -1449,7 +1483,14 @@ impl<'ctx> Iterator for Lexer<'ctx> {
                         skip_newlines = true;
                         continue;
                     },
-                    b'@' => Some(locate!(self.read_raw_string())),
+                    b'@' => {
+                        let (token, text) = self.read_raw_string();
+                        // Preserve delimiters for stringification; token display normalizes them.
+                        if text != token.to_string() {
+                            self.context.note_written_text(start, &text);
+                        }
+                        Some(locate!(token))
+                    },
                     _ => {
                         if !found_illegal {
                             let mut msg = format!("illegal byte 0x{first:x}");

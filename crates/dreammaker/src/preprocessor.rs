@@ -1411,7 +1411,17 @@ impl<'ctx> Preprocessor<'ctx> {
                                                         };
                                                         string.extend(std::iter::repeat(' ').take(gap));
                                                     }
-                                                    _ = write!(string, "{each}");
+                                                    // Use original literal spelling and raw-string delimiters.
+                                                    let written = match (each, spans) {
+                                                        (Token::Int(_) | Token::Float(_) | Token::String(_, StringKind::Raw), Some(spans)) => {
+                                                            self.context.written_text(spans[j].0)
+                                                        },
+                                                        _ => None,
+                                                    };
+                                                    match written {
+                                                        Some(text) => string.push_str(&text),
+                                                        None => _ = write!(string, "{each}"),
+                                                    }
                                                 }
                                                 if spans.is_some() {
                                                     let trailing = arg_trailing.get(i).copied().unwrap_or(0);

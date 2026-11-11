@@ -46,6 +46,9 @@ pub struct Context {
     errors: RefCell<Vec<DMError>>,
     /// Time spent reading from disk during preprocessing.
     io_time: Cell<std::time::Duration>,
+    /// Original literal text, indexed by source location, for macro
+    /// stringification. Preserves formatting such as `1e3` and `1.0`.
+    written_texts: RefCell<std::collections::BTreeMap<Location, Box<str>>>,
 }
 
 impl FileList {
@@ -321,6 +324,16 @@ impl Context {
 
     // ------------------------------------------------------------------------
     // Errors
+
+    /// Record a literal's original source text for macro stringification.
+    pub fn note_written_text(&self, at: Location, text: &str) {
+        self.written_texts.borrow_mut().insert(at, text.into());
+    }
+
+    /// Return a literal's recorded source text, if available.
+    pub fn written_text(&self, at: Location) -> Option<Box<str>> {
+        self.written_texts.borrow().get(&at).cloned()
+    }
 
     /// Push an error or other diagnostic to the context.
     pub fn register_error(&self, error: DMError) {
