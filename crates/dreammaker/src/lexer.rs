@@ -1054,6 +1054,14 @@ impl<'ctx> Lexer<'ctx> {
                 Ok(val) => return Token::Int(val),
                 Err(e) => e,
             };
+            // Before 515.1644, DreamMaker clamps overflowing integer literals
+            // to i32::MAX.
+            if self.context.clamp_integer_literals()
+                && !buf.is_empty()
+                && buf.chars().all(|c| c.is_digit(radix))
+            {
+                return Token::Float(i32::MAX as f32);
+            }
             // Try to parse it as a float instead - this will catch numbers
             // that are formatted like integers but are out of the range of our
             // integer type.

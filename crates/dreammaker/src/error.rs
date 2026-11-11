@@ -49,6 +49,8 @@ pub struct Context {
     /// Original literal text, indexed by source location, for macro
     /// stringification. Preserves formatting such as `1e3` and `1.0`.
     written_texts: RefCell<std::collections::BTreeMap<Location, Box<str>>>,
+    /// See [`Context::set_clamp_integer_literals`].
+    clamp_integer_literals: Cell<bool>,
 }
 
 impl FileList {
@@ -102,6 +104,19 @@ impl Context {
     /// Set a severity at and above which errors will be printed immediately.
     pub fn set_print_severity(&mut self, print_severity: Option<Severity>) {
         self.print_severity = print_severity;
+    }
+
+    /// Enable integer-literal clamping used before BYOND 515.1644.
+    /// Values above 2147483647 clamp to that value, including hexadecimal
+    /// and octal forms. Exponent and decimal-point forms are unaffected.
+    /// Disabled by default.
+    pub fn set_clamp_integer_literals(&self, clamp: bool) {
+        self.clamp_integer_literals.set(clamp);
+    }
+
+    /// Whether pre-515.1644 integer-literal clamping is enabled.
+    pub fn clamp_integer_literals(&self) -> bool {
+        self.clamp_integer_literals.get()
     }
 
     /// Get the configuration.

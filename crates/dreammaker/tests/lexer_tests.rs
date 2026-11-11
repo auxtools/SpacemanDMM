@@ -51,6 +51,26 @@ fn number_literals() {
 }
 
 #[test]
+fn integer_literals_before_515_1644() {
+    let lex_one = |text: &str, clamp: bool| {
+        let context = dm::Context::default();
+        context.set_clamp_integer_literals(clamp);
+        let tokens: Vec<Token> = Lexer::new(&context, FileId::UNKNOWN, text.as_bytes())
+            .map(|t| t.token)
+            .collect();
+        context.assert_success();
+        tokens[0].clone()
+    };
+    for text in ["3000000000", "0xFFFFFFFF", "0x123456789", "037777777777", "99999999999999999999"] {
+        assert_eq!(lex_one(text, true), Float(2147483647.0), "{text}");
+    }
+    assert_eq!(lex_one("3000000000", false), Float(3000000000.0));
+    assert_eq!(lex_one("2147483647", true), Int(2147483647));
+    assert_eq!(lex_one("3e9", true), Float(3e9));
+    assert_eq!(lex_one("3000000000.0", true), Float(3e9));
+}
+
+#[test]
 fn nested_interpolation() {
     assert_eq!(
         lex(r#""A[B"C"D]E""#),
