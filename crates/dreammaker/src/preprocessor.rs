@@ -1074,6 +1074,12 @@ impl<'ctx> Preprocessor<'ctx> {
                             self.multiple_locations
                                 .insert(pragma_use_loc.file, pragma_use_loc);
                         }
+                        // Consume the whole pragma line; trailing words are not source code.
+                        while let Some(lt) = self.inner_next() {
+                            if lt.token == Token!['\n'] {
+                                break;
+                            }
+                        }
                     },
                     // none of this other stuff should even exist
                     other => {
