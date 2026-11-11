@@ -1122,7 +1122,13 @@ impl<'ctx> Preprocessor<'ctx> {
 
                 // substitute special macros
                 if *ident == ident!("__FILE__") {
-                    let path = self.include_stack.top_file_path().to_str().unwrap();
+                    // Resolve relative to the project directory even when the .dme path is absolute.
+                    let path = self.include_stack.top_file_path();
+                    let path = path
+                        .strip_prefix(self.env_file.parent().unwrap())
+                        .unwrap_or(path)
+                        .to_str()
+                        .unwrap();
                     let dm_path: String = cfg_select! {
                         windows => path.replace("\\", "/"),
                         _ => path.to_string()
