@@ -1443,6 +1443,9 @@ pub struct Parameter {
     pub default: Option<Expression>,
     pub in_list: Option<Expression>,
     pub location: Location,
+    /// Written with a leading slash, e.g. `/obj/x`. BYOND does not allocate
+    /// a parameter slot for this form.
+    pub absolute: bool,
 }
 
 impl fmt::Display for Parameter {

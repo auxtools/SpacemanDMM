@@ -1371,12 +1371,13 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
                 default: None,
                 in_list: None,
                 location: self.location,
+                absolute: false,
             });
         }
 
         // `name` or `obj/name` or `var/obj/name` or ...
         let leading_loc = self.updated_location();
-        let (_absolute, mut path) = leading!(self.tree_path(true));
+        let (absolute, mut path) = leading!(self.tree_path(true));
         let name = match path.pop() {
             Some(name) => name,
             None => {
@@ -1424,6 +1425,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             default,
             in_list,
             location,
+            absolute,
         })
     }
 
