@@ -1631,13 +1631,22 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
                 let first_empty = init.is_none();
                 let mut init = init;
                 let mut test = self.expression()?;
+                let mut second_separator = true;
                 let mut inc = match self.semicolon()? {
                     Some(()) => self.simple_statement(false, vars)?,
                     None => match self.comma()? {
                         Some(()) => self.simple_statement(false, vars)?,
-                        None => None,
+                        None => {
+                            second_separator = false;
+                            None
+                        },
                     },
                 };
+                // DreamMaker treats `for (a; )` as `for (a)`. Two semicolons
+                // are required for an unconditional loop.
+                if !first_empty && test.is_none() && !second_separator {
+                    return Err(self.error("ambiguous for (x; ): DreamMaker treats it as for (x); use two semicolons for an unconditional loop"));
+                }
                 // DreamMaker drops an empty initial clause before a semicolon:
                 // `for (; a; b)` becomes `for (a; b)`, initializing with a and
                 // testing b. With commas, `for (, a, b)` keeps the empty clause.

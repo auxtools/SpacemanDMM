@@ -418,4 +418,22 @@ fn for_with_an_empty_first_part() {
     ",
         |context, _| assert!(!context.errors().is_empty()),
     );
+    with_code(
+        "
+/proc/test(a, b)
+    for (a = 5; )
+        b++
+    ",
+        |context, _| assert!(!context.errors().is_empty()),
+    );
+    with_code(
+        "
+/proc/test(a, b)
+    for (a = 5; ; )
+        break
+    for (a = 5; ; a++)
+        break
+    ",
+        |context, _| context.assert_success(),
+    );
 }
