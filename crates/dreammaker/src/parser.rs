@@ -1627,11 +1627,14 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
 
             // three-pronged loop form ("for loop")
             if let Some(()) = self.semicolon()? {
-                // for(init; test; [inc])
+                // DreamMaker accepts both for(init; test; inc) and for(init; test, inc).
                 let test = self.expression()?;
                 let inc = match self.semicolon()? {
                     Some(()) => self.simple_statement(false, vars)?,
-                    None => None,
+                    None => match self.comma()? {
+                        Some(()) => self.simple_statement(false, vars)?,
+                        None => None,
+                    },
                 };
                 require!(self.exact(Token![')']));
                 spanned(Statement::ForLoop {
@@ -1644,9 +1647,13 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             } else if let Some(()) = self.comma()? {
                 // for(init, test [, inc])
                 let test = self.expression()?;
+                // DreamMaker also accepts for(init, test; inc).
                 let inc = match self.comma()? {
                     Some(()) => self.simple_statement(false, vars)?,
-                    None => None,
+                    None => match self.semicolon()? {
+                        Some(()) => self.simple_statement(false, vars)?,
+                        None => None,
+                    },
                 };
                 // Increment exists
                 if inc.is_some() {
