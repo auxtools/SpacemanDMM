@@ -2851,20 +2851,27 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
         let start = self.location;
 
         let mut arguments = Vec::new();
-        // TODO: account for implicit nulls again
-        let result = self.separated(Token![,], Token![')'], Some(()), |this| {
-            let arg_start = this.location;
-            let result = this.expression();
-            this.annotate(arg_start, || Annotation::ProcArgument(arguments.len()));
-            match result {
-                Ok(Some(expr)) => {
-                    arguments.push(expr);
-                    SUCCESS
-                },
-                Ok(None) => Ok(None),
-                Err(e) => Err(e),
+        // An empty argument, as in `f(a, , b)`, is null
+        let mut comma_legal = false;
+        let result: Status<()> = loop {
+            if let Some(()) = self.exact(Token![')'])? {
+                break SUCCESS;
+            } else if let Some(()) = self.exact(Token![,])? {
+                if comma_legal {
+                    comma_legal = false;
+                } else {
+                    arguments.push(Expression::from(Term::Null));
+                }
+            } else if !comma_legal {
+                let arg_start = self.location;
+                let result = self.expression();
+                self.annotate(arg_start, || Annotation::ProcArgument(arguments.len()));
+                arguments.push(self.require(result)?);
+                comma_legal = true;
+            } else {
+                break Err(self.parse_error());
             }
-        });
+        };
         let end = self.location; // location of the closing parenthesis
         self.annotate_precise(start..end, || {
             Annotation::ProcArguments(parents.to_owned(), proc.clone(), arguments.len())
