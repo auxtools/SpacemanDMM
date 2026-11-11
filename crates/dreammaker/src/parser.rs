@@ -1781,7 +1781,8 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
                     // for(var/a as obj
                     Some(require!(self.input_type()))
                 } else {
-                    None
+                    // The type clause was already parsed as a potential key type.
+                    key_input_type
                 };
 
                 let in_list = if let Some(()) = self.exact(Token![in])? {
