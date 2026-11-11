@@ -1204,30 +1204,48 @@ impl<'ctx> Preprocessor<'ctx> {
 
                         self.annotate_macro(ident, location, Some(docs));
 
-                        // read arguments
+                        // Read arguments and source spans for stringification.
                         let mut args = Vec::new();
+                        let mut arg_spans = Vec::new();
+                        // Retain whitespace before each argument's comma or closing parenthesis.
+                        let mut arg_trailing = Vec::new();
                         let mut this_arg = Vec::new();
+                        let mut this_spans = Vec::new();
                         let mut parens = 0;
                         loop {
-                            let token = next!();
+                            let Some(located) = self.inner_next() else {
+                                return Err(self.error("unexpected EOF"));
+                            };
+                            let span = (located.start, located.end);
+                            let token = located.token;
                             match token {
                                 Token!['('] => {
                                     parens += 1;
                                     this_arg.push(token);
+                                    this_spans.push(span);
                                 },
                                 Token![')'] => {
                                     if parens == 0 {
+                                        arg_trailing.push(trailing_gap(&this_spans, span.0));
                                         args.push(this_arg);
+                                        arg_spans.push(this_spans);
                                         break;
                                     }
                                     parens -= 1;
                                     this_arg.push(token);
+                                    this_spans.push(span);
                                 },
                                 Token![,] if parens == 0 => {
+                                    arg_trailing.push(trailing_gap(&this_spans, span.0));
                                     args.push(this_arg);
+                                    arg_spans.push(this_spans);
                                     this_arg = Vec::new();
+                                    this_spans = Vec::new();
                                 },
-                                _ => this_arg.push(token),
+                                _ => {
+                                    this_arg.push(token);
+                                    this_spans.push(span);
+                                },
                             }
                         }
 
@@ -1330,13 +1348,35 @@ impl<'ctx> Preprocessor<'ctx> {
                                     Some(Token::Ident(argname, _)) => {
                                         match params.iter().position(|x| *x == argname) {
                                             Some(i) => {
+                                                // Preserve source spacing during stringification.
+                                                let spans = arg_spans.get(i).filter(|s| s.len() == args[i].len());
                                                 let mut string = String::new();
-                                                for each in &args[i] {
+                                                for (j, each) in args[i].iter().enumerate() {
                                                     use std::fmt::Write;
-                                                    if !string.is_empty() {
-                                                        string.push(' ');
+                                                    if j > 0 {
+                                                        let gap = match spans {
+                                                            // Expanded tokens lack source spans; estimate their spacing.
+                                                            Some(spans) if spans[j - 1].0 == spans[j - 1].1 || spans[j].0 == spans[j].1 => {
+                                                                let before = if j >= 2 { args[i].get(j - 2) } else { None };
+                                                                guessed_space(before, &args[i][j - 1], each) as usize
+                                                            },
+                                                            Some(spans) => {
+                                                                let (prev_end, start) = (spans[j - 1].1, spans[j].0);
+                                                                if prev_end.file == start.file && prev_end.line == start.line {
+                                                                    start.column.saturating_sub(prev_end.column) as usize
+                                                                } else {
+                                                                    1
+                                                                }
+                                                            },
+                                                            None => 1,
+                                                        };
+                                                        string.extend(std::iter::repeat(' ').take(gap));
                                                     }
                                                     _ = write!(string, "{each}");
+                                                }
+                                                if spans.is_some() {
+                                                    let trailing = arg_trailing.get(i).copied().unwrap_or(0);
+                                                    string.extend(std::iter::repeat(' ').take(trailing));
                                                 }
                                                 expansion.push_back(Token::String(
                                                     string.into(),
@@ -1394,6 +1434,47 @@ impl<'ctx> Preprocessor<'ctx> {
         }
         self.push_output(read);
         Ok(())
+    }
+}
+
+/// Estimate spacing for tokens without source spans: preserve identifier
+/// spacing flags, separate commas, and space binary operators.
+fn guessed_space(before: Option<&Token>, prev: &Token, next: &Token) -> bool {
+    // Distinguish subtraction from unary minus by the preceding operand.
+    fn operand(t: &Token) -> bool {
+        matches!(
+            t,
+            Token::Ident(..) | Token::Int(_) | Token::Float(_) | Token::String(..) | Token::Punct(crate::lexer::Punctuation::RParen | crate::lexer::Punctuation::RBracket)
+        )
+    }
+    let minus = Token::Punct(crate::lexer::Punctuation::Sub);
+    if *next == minus && operand(prev) {
+        return true;
+    }
+    if *prev == minus {
+        return before.is_some_and(operand);
+    }
+    fn binary(t: &Token) -> bool {
+        use crate::lexer::Punctuation::*;
+        matches!(
+            t,
+            Token::Punct(
+                Or | And | Eq | NotEq | Less | Greater | LessEq | GreaterEq | Add | Mul | Slash | Mod | BitOr
+                    | BitXor | LShift | RShift | Assign | AddAssign | SubAssign | MulAssign | DivAssign
+                    | QuestionMark | Colon
+            )
+        )
+    }
+    matches!(prev, Token::Ident(_, true)) || matches!(prev, Token::Punct(crate::lexer::Punctuation::Comma)) || binary(prev) || binary(next)
+}
+
+/// Count spaces from the final span to `next` on the same line.
+fn trailing_gap(spans: &[(Location, Location)], next: Location) -> usize {
+    match spans.last() {
+        Some((_, end)) if end.file == next.file && end.line == next.line => {
+            next.column.saturating_sub(end.column) as usize
+        },
+        _ => 0,
     }
 }
 
