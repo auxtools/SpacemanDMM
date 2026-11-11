@@ -1628,14 +1628,40 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             // three-pronged loop form ("for loop")
             if let Some(()) = self.semicolon()? {
                 // DreamMaker accepts both for(init; test; inc) and for(init; test, inc).
-                let test = self.expression()?;
-                let inc = match self.semicolon()? {
+                let first_empty = init.is_none();
+                let mut init = init;
+                let mut test = self.expression()?;
+                let mut inc = match self.semicolon()? {
                     Some(()) => self.simple_statement(false, vars)?,
                     None => match self.comma()? {
                         Some(()) => self.simple_statement(false, vars)?,
                         None => None,
                     },
                 };
+                // DreamMaker drops an empty initial clause before a semicolon:
+                // `for (; a; b)` becomes `for (a; b)`, initializing with a and
+                // testing b. With commas, `for (, a, b)` keeps the empty clause.
+                if first_empty && (test.is_some() || inc.is_some()) {
+                    let (Some(first), Some(second)) = (test, inc) else {
+                        // `for (; a; )` becomes `for (a)`: world iteration for a variable,
+                        // or no code (including no body) for other expressions.
+                        return Err(self.error(
+                            "ambiguous for (; x; ): DreamMaker treats it as for (x); use while (x) for a conditional loop",
+                        ));
+                    };
+                    let Statement::Expr(second) = second else {
+                        return Err(self.error("invalid for (; a; b): DreamMaker treats b as the condition"));
+                    };
+                    init = Some(Statement::Expr(first));
+                    test = Some(second);
+                    inc = match self.comma()? {
+                        Some(()) => self.simple_statement(false, vars)?,
+                        None => match self.semicolon()? {
+                            Some(()) => self.simple_statement(false, vars)?,
+                            None => None,
+                        },
+                    };
+                }
                 require!(self.exact(Token![')']));
                 spanned(Statement::ForLoop {
                     init: init.map(Box::new),
