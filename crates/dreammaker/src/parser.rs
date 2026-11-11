@@ -2661,6 +2661,9 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             },
 
             // term :: str_lit | num_lit
+            // Store raw strings in the same escaped representation as normal strings:
+            // @"a\b" becomes "a\\b".
+            Token::String(val, crate::lexer::StringKind::Raw) => Term::String(escape_raw(&val).into()),
             Token::String(val, _) => Term::String(val),
             Token::Resource(val) => {
                 self.annotate_precise(start..start.add_columns(2 + val.len() as u16), || Annotation::Resource((*val).into()));
@@ -2977,4 +2980,16 @@ fn reconstruct_path(
         result.push(Ident::from_nonstatic(last));
     }
     result
+}
+
+/// Escape raw contents for the AST's normal-string representation.
+fn escape_raw(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if matches!(ch, '\\' | '"' | '[') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
 }
