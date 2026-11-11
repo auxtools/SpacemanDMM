@@ -1518,15 +1518,17 @@ impl VarTypeBuilder {
 
 impl FromIterator<Ident> for VarTypeBuilder {
     fn from_iter<T: IntoIterator<Item = Ident>>(iter: T) -> Self {
+        // DreamMaker accepts declaration flags anywhere in the path:
+        // `var/list/static/x` declares a static list.
         let mut flags = VarTypeFlags::default();
         let type_path = iter
             .into_iter()
-            .skip_while(|p| {
+            .filter(|p| {
                 if let Some(flag) = VarTypeFlags::from_ident(p) {
                     flags |= flag;
-                    true
-                } else {
                     false
+                } else {
+                    true
                 }
             })
             .collect();
