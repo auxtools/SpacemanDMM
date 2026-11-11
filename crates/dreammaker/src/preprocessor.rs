@@ -1271,6 +1271,25 @@ impl<'ctx> Preprocessor<'ctx> {
                             return Err(self.error("wrong number of arguments to macro call"));
                         }
 
+                        // DreamMaker rescans expanded text. Add internal line breaks from
+                        // earlier substituted arguments to the closing-parenthesis line;
+                        // exclude whitespace surrounding each argument.
+                        let arg_breaks: Vec<u32> = args
+                            .iter()
+                            .map(|arg| {
+                                let start = arg.iter().position(|t| *t != Token!['\n']);
+                                let end = arg.iter().rposition(|t| *t != Token!['\n']);
+                                match (start, end) {
+                                    (Some(start), Some(end)) => arg[start..=end]
+                                        .iter()
+                                        .filter(|t| **t == Token!['\n'])
+                                        .count() as u32,
+                                    _ => 0,
+                                }
+                            })
+                            .collect();
+                        let mut breaks = 0;
+
                         // paste them into the expansion
                         let mut expansion = VecDeque::new();
                         let mut input = subst.iter().cloned();
@@ -1279,7 +1298,12 @@ impl<'ctx> Preprocessor<'ctx> {
                                 // just an ident = expand it
                                 Token::Ident(ident, ws) => {
                                     match params.iter().position(|x| *x == ident) {
-                                        Some(i) => expansion.extend(args[i].iter().cloned()),
+                                        Some(i) => {
+                                            breaks += arg_breaks[i];
+                                            expansion.extend(args[i].iter().cloned())
+                                        },
+                                        None if ident == ident!("__LINE__") && breaks > 0 => expansion
+                                            .push_back(Token::Int((self.last_input_loc.line + breaks) as i32)),
                                         None => expansion.push_back(Token::Ident(ident, ws)),
                                     }
                                 },
