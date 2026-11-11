@@ -1229,6 +1229,9 @@ impl<'ctx> Preprocessor<'ctx> {
                                         arg_trailing.push(trailing_gap(&this_spans, span.0));
                                         args.push(this_arg);
                                         arg_spans.push(this_spans);
+                                        // Attribute the expansion to the closing parenthesis,
+                                        // matching DreamMaker's __LINE__.
+                                        self.last_input_loc = span.0;
                                         break;
                                     }
                                     parens -= 1;
