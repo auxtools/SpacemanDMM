@@ -34,6 +34,12 @@ fn number_literals() {
     assert_eq!(lex("0xABCDE"), vec![Int(703710), Token!['\n']]);
     assert_eq!(lex("1e4"), vec![Float(10000.0), Token!['\n']]);
 
+    // Hexadecimal values above i32::MAX become floats.
+    assert_eq!(lex("0x7FFFFFFF"), vec![Int(2147483647), Token!['\n']]);
+    assert_eq!(float("0x80000000"), 2147483648.0);
+    assert_eq!(float("0xFFFFFFFF"), 4294967295.0);
+    assert_eq!(float("0xDEADBEEF"), 3735928559.0);
+
     let f = float("1.#INF");
     assert!(f.is_infinite() && f > 0.);
     let f = float("1.#IND");

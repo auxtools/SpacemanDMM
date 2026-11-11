@@ -1071,6 +1071,16 @@ impl<'ctx> Lexer<'ctx> {
                 }
                 return Token::Float(val);
             }
+            // DreamMaker reads overflowing hexadecimal literals up to eight
+            // digits as floats (0xFFFFFFFF = 4294967295). Longer hex literals
+            // and octal literals above i32::MAX are rejected here; DreamMaker
+            // converts them differently (0x100000000 becomes 2**60).
+            if radix == 16
+                && buf.len() <= 9
+                && let Ok(val) = u32::from_str_radix(&buf, radix)
+            {
+                return Token::Float(val as f32);
+            }
             self.context.register_error(self.error(format!(
                 "bad base-{radix} integer \"{buf}\": {original_error}"
             )));
