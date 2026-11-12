@@ -396,7 +396,9 @@ fn for_with_an_empty_first_part() {
             let proc = tree.root().get_proc("test").unwrap();
             let code = proc.get().code.as_ref().unwrap();
             let parts = |n: usize| match &code[n].elem {
-                Statement::ForLoop { init, test, inc, .. } => (init.is_some(), test.is_some(), inc.is_some()),
+                Statement::ForLoop {
+                    init, test, inc, ..
+                } => (init.is_some(), test.is_some(), inc.is_some()),
                 Statement::ForInfinite { .. } => (false, false, false),
                 other => panic!("expected ForLoop, got {other:?}"),
             };
@@ -435,5 +437,35 @@ fn for_with_an_empty_first_part() {
         break
     ",
         |context, _| context.assert_success(),
+    );
+}
+
+#[test]
+fn a_var_declared_twice_on_one_type_is_an_error() {
+    with_code(
+        "
+/client
+    var/name2 = 1
+/client/var/name2 = 2
+/datum/a
+    var/v
+/datum/a/b
+    v = 3
+/datum/c/var/w
+/datum/c/d/var/w2
+/client/var/eye
+/atom/var/tmp/pixel_x
+",
+        |context, _| {
+            let errors = context.errors();
+            let duplicates: Vec<String> = errors
+                .iter()
+                .filter(|e| e.description().starts_with("duplicate definition"))
+                .map(|e| format!("{}: {}", e.location().line, e.description()))
+                .collect();
+            // Lines are relative to the trimmed input. Subtype overrides and builtin
+            // redeclarations for annotations are allowed.
+            assert_eq!(duplicates, ["3: duplicate definition of var/name2"]);
+        },
     );
 }
