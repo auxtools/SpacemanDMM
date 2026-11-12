@@ -409,6 +409,20 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
         self.procs = true;
     }
 
+    /// Report duplicate var declarations on the same type, matching DreamMaker.
+    /// Allow redeclarations of builtins: projects use them for annotations, and
+    /// the builtin list includes vars absent from older BYOND versions.
+    fn duplicate_var(&mut self, ty: TypeIndex, name: &Ident, location: Location) {
+        if let Some(previous) = self.tree.var_declared_on(ty, name) {
+            if previous.is_builtins() {
+                return;
+            }
+            DMError::new(location, format!("duplicate definition of var/{name}"))
+                .with_note(previous, "previous definition")
+                .register(self.context);
+        }
+    }
+
     pub fn annotate_to(&mut self, annotations: &'an mut AnnotationTree) {
         self.annotations = Some(annotations);
         self.procs = true;
@@ -1056,6 +1070,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
                 if let Some(mut var_type) = var_type {
                     var_type.suffix(&var_suffix);
                     var_type.input_type = input_type;
+                    self.duplicate_var(current, last_part, location);
                     self.tree.declare_var(
                         current,
                         last_part,
@@ -1119,10 +1134,12 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
                                 last_part,
                             ))
                         });
+                        // Use the declaration's start; parsing may have advanced into the next file.
+                        self.duplicate_var(current, last_part, entry_start);
                         self.tree.declare_var(
                             current,
                             last_part,
-                            self.location,
+                            entry_start,
                             docs,
                             var_type.build(),
                             var_suffix.into_initializer(),
@@ -1659,7 +1676,8 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
                         ));
                     };
                     let Statement::Expr(second) = second else {
-                        return Err(self.error("invalid for (; a; b): DreamMaker treats b as the condition"));
+                        return Err(self
+                            .error("invalid for (; a; b): DreamMaker treats b as the condition"));
                     };
                     init = Some(Statement::Expr(first));
                     test = Some(second);

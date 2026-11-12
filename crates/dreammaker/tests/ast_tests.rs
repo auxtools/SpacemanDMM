@@ -396,7 +396,9 @@ fn for_with_an_empty_first_part() {
             let proc = tree.root().get_proc("test").unwrap();
             let code = proc.get().code.as_ref().unwrap();
             let parts = |n: usize| match &code[n].elem {
-                Statement::ForLoop { init, test, inc, .. } => (init.is_some(), test.is_some(), inc.is_some()),
+                Statement::ForLoop {
+                    init, test, inc, ..
+                } => (init.is_some(), test.is_some(), inc.is_some()),
                 Statement::ForInfinite { .. } => (false, false, false),
                 other => panic!("expected ForLoop, got {other:?}"),
             };
@@ -436,4 +438,60 @@ fn for_with_an_empty_first_part() {
     ",
         |context, _| context.assert_success(),
     );
+}
+
+#[test]
+fn a_var_declared_twice_on_one_type_is_an_error() {
+    with_code(
+        "
+/client
+    var/name2 = 1
+/client/var/name2 = 2
+/datum/a
+    var/v
+/datum/a/b
+    v = 3
+/datum/c/var/w
+/datum/c/d/var/w2
+/client/var/eye
+/atom/var/tmp/pixel_x
+",
+        |context, _| {
+            let errors = context.errors();
+            let duplicates: Vec<String> = errors
+                .iter()
+                .filter(|e| e.description().starts_with("duplicate definition"))
+                .map(|e| format!("{}: {}", e.location().line, e.description()))
+                .collect();
+            // Lines are relative to the trimmed input. Subtype overrides and builtin
+            // redeclarations for annotations are allowed.
+            assert_eq!(duplicates, ["3: duplicate definition of var/name2"]);
+        },
+    );
+}
+
+#[test]
+fn a_var_without_a_value_is_declared_where_it_is_written() {
+    // Parsing the last declaration advances to the including file's end.
+    let dir = std::env::temp_dir().join(format!("sdmm-var-place-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("world.dme"), "#include \"a.dm\"\n").unwrap();
+    std::fs::write(dir.join("a.dm"), "/datum/a\n\tvar/y = 1\n\tvar/x\n").unwrap();
+    let context = Context::default();
+    let pp = Preprocessor::new(&context, dir.join("world.dme")).unwrap();
+    let mut parser = Parser::new(&context, pp);
+    parser.enable_procs();
+    let tree = parser.parse_object_tree();
+    let a = tree.find("/datum/a").unwrap();
+    let place = |name: &str| {
+        let location = a.get().vars[name].declaration.as_ref().unwrap().location;
+        (
+            context.file_path(location.file).to_path_buf(),
+            location.line,
+        )
+    };
+    let (y, x) = (place("y"), place("x"));
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(y, (std::path::PathBuf::from("a.dm"), 2));
+    assert_eq!(x, (std::path::PathBuf::from("a.dm"), 3));
 }

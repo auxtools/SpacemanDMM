@@ -1114,6 +1114,15 @@ impl ObjectTreeBuilder {
         }
     }
 
+    /// Return the location of `name` declared directly on `ty`, if any.
+    pub(crate) fn var_declared_on(&self, ty: TypeIndex, name: &Ident) -> Option<Location> {
+        self.inner[ty]
+            .vars
+            .get(name)
+            .and_then(|var| var.declaration.as_ref())
+            .map(|declaration| declaration.location)
+    }
+
     pub(crate) fn declare_var(
         &mut self,
         ty: TypeIndex,
