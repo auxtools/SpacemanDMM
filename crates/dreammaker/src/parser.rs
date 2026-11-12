@@ -1134,11 +1134,12 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
                                 last_part,
                             ))
                         });
-                        self.duplicate_var(current, last_part, self.location);
+                        // Use the declaration's start; parsing may have advanced into the next file.
+                        self.duplicate_var(current, last_part, entry_start);
                         self.tree.declare_var(
                             current,
                             last_part,
-                            self.location,
+                            entry_start,
                             docs,
                             var_type.build(),
                             var_suffix.into_initializer(),

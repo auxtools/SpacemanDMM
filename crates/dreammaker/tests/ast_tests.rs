@@ -469,3 +469,29 @@ fn a_var_declared_twice_on_one_type_is_an_error() {
         },
     );
 }
+
+#[test]
+fn a_var_without_a_value_is_declared_where_it_is_written() {
+    // Parsing the last declaration advances to the including file's end.
+    let dir = std::env::temp_dir().join(format!("sdmm-var-place-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("world.dme"), "#include \"a.dm\"\n").unwrap();
+    std::fs::write(dir.join("a.dm"), "/datum/a\n\tvar/y = 1\n\tvar/x\n").unwrap();
+    let context = Context::default();
+    let pp = Preprocessor::new(&context, dir.join("world.dme")).unwrap();
+    let mut parser = Parser::new(&context, pp);
+    parser.enable_procs();
+    let tree = parser.parse_object_tree();
+    let a = tree.find("/datum/a").unwrap();
+    let place = |name: &str| {
+        let location = a.get().vars[name].declaration.as_ref().unwrap().location;
+        (
+            context.file_path(location.file).to_path_buf(),
+            location.line,
+        )
+    };
+    let (y, x) = (place("y"), place("x"));
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(y, (std::path::PathBuf::from("a.dm"), 2));
+    assert_eq!(x, (std::path::PathBuf::from("a.dm"), 3));
+}
