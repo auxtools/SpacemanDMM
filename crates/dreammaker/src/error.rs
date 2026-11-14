@@ -51,6 +51,8 @@ pub struct Context {
     written_texts: RefCell<std::collections::BTreeMap<Location, Box<str>>>,
     /// See [`Context::set_clamp_integer_literals`].
     clamp_integer_literals: Cell<bool>,
+    /// See [`Context::first_macro_start`].
+    macro_starts: RefCell<std::collections::BTreeSet<Location>>,
 }
 
 impl FileList {
@@ -348,6 +350,18 @@ impl Context {
     /// Return a literal's recorded source text, if available.
     pub fn written_text(&self, at: Location) -> Option<Box<str>> {
         self.written_texts.borrow().get(&at).cloned()
+    }
+
+    /// Record a source macro invocation that has no expansion token at its location.
+    pub(crate) fn note_macro_start(&self, at: Location) {
+        self.macro_starts.borrow_mut().insert(at);
+    }
+
+    /// First source macro invocation in `range` with no expansion token at its
+    /// location. Includes empty expansions and multiline calls: their tokens are
+    /// located at the closing parenthesis, as in DreamMaker's `__LINE__`.
+    pub fn first_macro_start(&self, range: std::ops::Range<Location>) -> Option<Location> {
+        self.macro_starts.borrow().range(range).next().copied()
     }
 
     /// Push an error or other diagnostic to the context.

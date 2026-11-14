@@ -102,6 +102,10 @@ pub struct ProcValue {
     pub code: Option<Block>,
     #[get_size(size_fn = heap_size_of_location_range)]
     pub body_range: Option<Range<Location>>,
+    /// First debug line before the body: the first nonempty line after the
+    /// header, including a macro that expands to nothing. An empty body uses
+    /// the next such line after it.
+    pub first_line: Option<u32>,
 }
 
 #[derive(Debug, Default, GetSize)]
@@ -1241,6 +1245,7 @@ impl ObjectTreeBuilder {
             docs: Default::default(),
             code,
             body_range,
+            first_line: None,
         };
 
         // DM really does reorder the declaration to appear before the override,

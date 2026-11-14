@@ -24,6 +24,9 @@ pub struct IndentProcessor<'ctx, I> {
     current_spaces: Option<usize>,
     parentheses: usize,
     eof_yielded: bool,
+    /// Output tokens whose end location must be the next source token.
+    /// Doc comments are skipped when finding that token.
+    unended: Vec<usize>,
 }
 
 impl<'ctx, I> IndentProcessor<'ctx, I>
@@ -44,6 +47,7 @@ where
             current_spaces: None,
             parentheses: 0,
             eof_yielded: false,
+            unended: Vec::new(),
         }
     }
 
@@ -53,12 +57,18 @@ where
             .push_back(LocatedToken::new(self.last_input_loc, tok));
     }
 
+    /// Emit an indentation token starting at the previous line's end and ending
+    /// at the next source token, excluding doc comments.
     #[inline]
-    fn push_eol(&mut self, tok: Token) {
-        self.output.push_back(LocatedToken::new(
-            self.eol_location.unwrap_or(self.last_input_loc),
-            tok,
-        ));
+    fn push_eol(&mut self, tok: Token, doc_comment: bool) {
+        if doc_comment {
+            self.unended.push(self.output.len());
+        }
+        self.output.push_back(LocatedToken {
+            start: self.eol_location.unwrap_or(self.last_input_loc),
+            end: self.last_input_loc,
+            token: tok,
+        });
     }
 
     fn real_next(&mut self, read: LocatedToken) {
@@ -83,6 +93,13 @@ where
                 return;
             },
             _ => {},
+        }
+
+        let doc_comment = matches!(read.token, Token::DocComment(_));
+        if !doc_comment {
+            for at in self.unended.drain(..) {
+                self.output[at].end = read.start;
+            }
         }
 
         // handle pre-existing braces
@@ -130,7 +147,7 @@ where
 
             if indents + 1 == new_indents {
                 // single indent
-                self.push_eol(Token!['{']);
+                self.push_eol(Token!['{'], doc_comment);
             } else if indents < new_indents {
                 // multiple indent is an error, register it but let it work
                 DMError::new(
@@ -142,19 +159,19 @@ where
                 )
                 .register(self.context);
                 for _ in indents..new_indents {
-                    self.push_eol(Token!['{']);
+                    self.push_eol(Token!['{'], doc_comment);
                 }
             } else if indents == new_indents + 1 {
                 // single unindent
-                self.push_eol(Token!['}']);
+                self.push_eol(Token!['}'], doc_comment);
             } else if indents > new_indents {
                 // multiple unindent
                 for _ in new_indents..indents {
-                    self.push_eol(Token!['}']);
+                    self.push_eol(Token!['}'], doc_comment);
                 }
             } else {
                 // same indent as before
-                self.push_eol(Token![;]);
+                self.push_eol(Token![;], doc_comment);
             }
         }
 
@@ -198,11 +215,15 @@ where
 
     fn next(&mut self) -> Option<LocatedToken> {
         loop {
-            if let Some(token) = self.output.pop_front() {
+            if !self.unended.is_empty() {
+                // The next source token supplies the end location.
+            } else if let Some(token) = self.output.pop_front() {
                 return Some(token);
-            } else if let Some(tok) = self.inner.next() {
+            }
+            if let Some(tok) = self.inner.next() {
                 self.real_next(tok);
             } else if !self.eof_yielded {
+                self.unended.clear();
                 self.push(Token![;]);
                 if let Some((_, indents)) = self.current {
                     for _ in 0..indents {

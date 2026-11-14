@@ -578,10 +578,14 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
 
     /// Consume next token unconditionally. Cannot be undone. Try `take_match!` instead.
     fn take(&mut self) -> Token {
+        self.take_located().token
+    }
+
+    fn take_located(&mut self) -> LocatedToken {
         self.peek(); // Always populates self.next, so .take().unwrap() is OK
         self.doc_comments_pending.clear();
         self.expected.clear();
-        self.next.pop_front().unwrap().token
+        self.next.pop_front().unwrap()
     }
 
     fn next_comment_of_target(&mut self, target: DocTarget) -> Status<DocComment> {
@@ -1286,12 +1290,18 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             docs.push(comment);
         }
 
+        // The indentation token's end locates the body (see `body_first_line`).
+        let next_end = self.peek_n(0).end;
         if let Some(()) = self.statement_terminator()? {
             // proc has no body and just ends with `;`
             body_tt.push(LocatedToken::new(self.location, Token![;]));
         } else if let Some(()) = self.exact(Token!['{'])? {
             // proc has a body starting with `{`
-            body_tt.push(LocatedToken::new(self.location, Token!['{']));
+            body_tt.push(LocatedToken {
+                start: self.location,
+                end: next_end,
+                token: Token!['{'],
+            });
 
             // enclosing doc comments `//!` can appear after the `{`
             while let Some(comment) = self.enclosing_doc_comment()? {
@@ -1310,6 +1320,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             }
             body_tt.push(LocatedToken::new(self.location, Token![;]));
         }
+        let first_line = self.body_first_line(&body_tt, body_start);
 
         let code = if self.procs {
             let result = {
@@ -1349,6 +1360,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
         ) {
             Ok((idx, proc)) => {
                 proc.docs.extend(docs);
+                proc.first_line = first_line;
                 // manually performed for borrowck reasons
                 if let Some(dest) = self.annotations.as_mut() {
                     let new_stack =
@@ -1541,7 +1553,43 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
         success(as_what)
     }
 
-    /// Parse a block
+    /// First debug line of a proc body, including empty macro expansions.
+    /// An empty body uses the next nonempty line after it.
+    fn body_first_line(&mut self, body: &[LocatedToken], header_end: Location) -> Option<u32> {
+        // Indentation tokens end at the next source token.
+        let made_up = |t: &LocatedToken| t.end != t.start;
+        let (first, empty) = match body {
+            // A braced body starts at the opening brace.
+            [open, ..] if open.token == Token!['{'] && !made_up(open) => (open.start, false),
+            // An indented body starts at its first source token.
+            [open, rest @ ..] if open.token == Token!['{'] => {
+                match rest.iter().find(|t| !made_up(t)) {
+                    Some(t) if t.token != Token!['}'] => (t.start, false),
+                    _ => (header_end, true),
+                }
+            },
+            [only] if only.token == Token![;] => (header_end, true),
+            // An inline body starts on the header's line.
+            [first, ..] => (first.start, false),
+            [] => return None,
+        };
+        // An empty body uses the next nonempty line.
+        let first = if empty {
+            let next = self.peek_n(0);
+            if made_up(next) { next.end } else { next.start }
+        } else {
+            first
+        };
+        if first.file != header_end.file || (empty && first.line <= header_end.line) {
+            return None;
+        }
+        let first = self
+            .context
+            .first_macro_start(header_end..first)
+            .unwrap_or(first);
+        Some(first.line)
+    }
+
     fn block(&mut self) -> Status<Block> {
         let mut vars = Vec::new();
         let result = if let Some(()) = self.exact(Token!['{'])? {
@@ -3009,15 +3057,16 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
         if self.peek() == &Token::Eof {
             return try_another();
         }
-        let start = self.take();
-        let kind = TTKind::from_token(&start);
-        target.push(LocatedToken::new(self.location(), start));
+        let start = self.take_located();
+        let kind = TTKind::from_token(&start.token);
+        target.push(start);
         let Some(kind) = kind else { return SUCCESS };
         let location = self.location;
         loop {
             self.expected(kind.end());
             if kind.is_end(self.peek()) {
-                target.push(LocatedToken::new(self.location(), self.take()));
+                let end = self.take_located();
+                target.push(end);
                 return SUCCESS;
             } else {
                 self.skipping_location = Some(location);

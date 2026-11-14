@@ -495,3 +495,55 @@ fn a_var_without_a_value_is_declared_where_it_is_written() {
     assert_eq!(y, (std::path::PathBuf::from("a.dm"), 2));
     assert_eq!(x, (std::path::PathBuf::from("a.dm"), 3));
 }
+
+#[test]
+fn proc_first_line() {
+    // The body's first debug line includes empty macro expansions.
+    with_code(
+        "
+#define EMPTY
+#define CALL(a, b) world.log << list(a, b)
+/proc/macro()
+\tEMPTY
+\treturn 1
+/proc/semicolon()
+\t;
+\treturn 1
+/proc/doc()
+\t/// doc
+\treturn 1
+/proc/call_macro()
+\tCALL(1,
+\t\t2)
+/proc/braces() {
+\treturn 1
+}
+/proc/one_line() return 1
+/proc/empty()
+\t// comment
+
+/datum/a
+\tproc/last()
+
+/datum/b
+",
+        |_, tree| {
+            let first_line = |ty: &str, name: &str| {
+                let ty = if ty.is_empty() {
+                    tree.root()
+                } else {
+                    tree.find(ty).unwrap()
+                };
+                ty.get().procs[name].value[0].first_line
+            };
+            assert_eq!(first_line("", "macro"), Some(4));
+            assert_eq!(first_line("", "semicolon"), Some(7));
+            assert_eq!(first_line("", "doc"), Some(11));
+            assert_eq!(first_line("", "call_macro"), Some(13));
+            assert_eq!(first_line("", "braces"), Some(15));
+            assert_eq!(first_line("", "one_line"), Some(18));
+            assert_eq!(first_line("", "empty"), Some(22));
+            assert_eq!(first_line("/datum/a", "last"), Some(25));
+        },
+    );
+}
