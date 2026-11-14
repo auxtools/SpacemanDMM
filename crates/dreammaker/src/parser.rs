@@ -353,6 +353,17 @@ pub struct Parser<'ctx, 'an, 'inp> {
     procs: bool,
     procs_bad: u64,
     procs_good: u64,
+
+    /// Next source token after the body and after each statement, for debug lines.
+    in_body: bool,
+    after_body: Option<Location>,
+    next_lines: Vec<(Location, u32)>,
+    /// Start location and end line of the last token consumed.
+    last_taken: Location,
+    last_taken_line: u32,
+    /// Multiline end locations and operator lines collected so far.
+    end_lines: Vec<(Location, u32)>,
+    operator_lines: Vec<(Location, u32)>,
 }
 
 impl<'ctx, 'an, 'inp> HasLocation for Parser<'ctx, 'an, 'inp> {
@@ -402,6 +413,14 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             procs: false,
             procs_bad: 0,
             procs_good: 0,
+
+            in_body: false,
+            after_body: None,
+            next_lines: Vec::new(),
+            last_taken: Location::UNKNOWN,
+            last_taken_line: 0,
+            end_lines: Vec::new(),
+            operator_lines: Vec::new(),
         }
     }
 
@@ -578,10 +597,23 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
 
     /// Consume next token unconditionally. Cannot be undone. Try `take_match!` instead.
     fn take(&mut self) -> Token {
+        self.take_located().token
+    }
+
+    fn take_located(&mut self) -> LocatedToken {
         self.peek(); // Always populates self.next, so .take().unwrap() is OK
         self.doc_comments_pending.clear();
         self.expected.clear();
-        self.next.pop_front().unwrap().token
+        let token = self.next.pop_front().unwrap();
+        self.last_taken = token.start;
+        self.last_taken_line = match token.token {
+            Token::InterpStringEnd(_) => self
+                .context
+                .token_end(token.start)
+                .unwrap_or(token.start.line),
+            _ => token.start.line,
+        };
+        token
     }
 
     fn next_comment_of_target(&mut self, target: DocTarget) -> Status<DocComment> {
@@ -1286,12 +1318,18 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             docs.push(comment);
         }
 
+        // The indentation token's end locates the body (see `body_first_line`).
+        let next_end = self.peek_n(0).end;
         if let Some(()) = self.statement_terminator()? {
             // proc has no body and just ends with `;`
             body_tt.push(LocatedToken::new(self.location, Token![;]));
         } else if let Some(()) = self.exact(Token!['{'])? {
             // proc has a body starting with `{`
-            body_tt.push(LocatedToken::new(self.location, Token!['{']));
+            body_tt.push(LocatedToken {
+                start: self.location,
+                end: next_end,
+                token: Token!['{'],
+            });
 
             // enclosing doc comments `//!` can appear after the `{`
             while let Some(comment) = self.enclosing_doc_comment()? {
@@ -1310,14 +1348,24 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             }
             body_tt.push(LocatedToken::new(self.location, Token![;]));
         }
+        let first_line = self.body_first_line(&body_tt, body_start);
+        let mut next_lines = Vec::new();
+        let mut end_lines = Vec::new();
+        let mut operator_lines = Vec::new();
 
         let code = if self.procs {
             let result = {
+                let after_body = self.next_source_token();
                 let mut subparser: Parser<'ctx, '_, '_> = Parser::new(self.context, body_tt);
                 if let Some(a) = self.annotations.as_mut() {
                     subparser.annotations = Some(*a);
                 }
+                subparser.after_body = after_body;
+                subparser.in_body = true;
                 let block = subparser.block();
+                next_lines = std::mem::take(&mut subparser.next_lines);
+                end_lines = std::mem::take(&mut subparser.end_lines);
+                operator_lines = std::mem::take(&mut subparser.operator_lines);
                 subparser.require(block)
             };
             if result.is_ok() {
@@ -1349,6 +1397,13 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
         ) {
             Ok((idx, proc)) => {
                 proc.docs.extend(docs);
+                proc.first_line = first_line;
+                next_lines.sort_unstable();
+                proc.next_lines = next_lines.into();
+                end_lines.sort_unstable();
+                proc.end_lines = end_lines.into();
+                operator_lines.sort_unstable();
+                proc.operator_lines = operator_lines.into();
                 // manually performed for borrowck reasons
                 if let Some(dest) = self.annotations.as_mut() {
                     let new_stack =
@@ -1541,7 +1596,107 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
         success(as_what)
     }
 
-    /// Parse a block
+    /// First debug line of a proc body, including empty macro expansions.
+    /// An empty body uses the next nonempty line after it.
+    fn body_first_line(&mut self, body: &[LocatedToken], header_end: Location) -> Option<u32> {
+        // Indentation tokens end at the next source token.
+        let made_up = |t: &LocatedToken| t.end != t.start;
+        let (first, empty) = match body {
+            // A braced body starts at the opening brace.
+            [open, ..] if open.token == Token!['{'] && !made_up(open) => (open.start, false),
+            // An indented body starts at its first source token.
+            [open, rest @ ..] if open.token == Token!['{'] => {
+                match rest.iter().find(|t| !made_up(t)) {
+                    Some(t) if t.token != Token!['}'] => (t.start, false),
+                    _ => (header_end, true),
+                }
+            },
+            [only] if only.token == Token![;] => (header_end, true),
+            // An inline body starts on the header's line.
+            [first, ..] => (first.start, false),
+            [] => return None,
+        };
+        // An empty body uses the next nonempty line.
+        let first = if empty {
+            self.next_source_token()?
+        } else {
+            first
+        };
+        if first.file != header_end.file || (empty && first.line <= header_end.line) {
+            return None;
+        }
+        let first = self
+            .context
+            .first_macro_start(header_end..first)
+            .unwrap_or(first);
+        Some(first.line)
+    }
+
+    /// Next source location; indentation tokens end at that location.
+    fn next_source_token(&mut self) -> Option<Location> {
+        let next = self.peek_n(0);
+        match next.token {
+            Token::Eof => None,
+            _ if next.end != next.start => Some(next.end),
+            _ => Some(next.start),
+        }
+    }
+
+    /// Record the next nonempty line after a statement, including directives
+    /// and empty macro expansions.
+    fn note_next_line(&mut self, at: Location) {
+        if !self.in_body {
+            return;
+        }
+        // Start after the statement's last token, including a consumed `;`.
+        let from = self.last_taken;
+        // Skip the body's closing tokens to find the next source location.
+        let mut k = 0;
+        let to = loop {
+            let next = self.peek_n(k);
+            match next.token {
+                Token::Eof => match self.after_body {
+                    Some(after_body) => break after_body,
+                    None => return,
+                },
+                Token![;] | Token!['}'] if next.end == next.start => k += 1,
+                _ if next.end != next.start => break next.end,
+                _ => break next.start,
+            }
+        };
+        if to.file != from.file || to < from {
+            return;
+        }
+        let to = [
+            self.context.first_macro_start(from..to),
+            self.context.first_directive(from..to),
+        ]
+        .into_iter()
+        .flatten()
+        .fold(to, Location::min);
+        self.next_lines.push((at, to.line));
+    }
+
+    /// Record a multiline construct's end at the last token consumed.
+    fn note_end(&mut self, start: Location) {
+        if self.in_body && self.last_taken_line > start.line {
+            self.end_lines.push((start, self.last_taken_line));
+        }
+    }
+
+    /// Record the operator's line against the following operand's location
+    /// when they span a newline.
+    fn note_operator(&mut self) {
+        if !self.in_body {
+            return;
+        }
+        let operator = self.last_taken;
+        let next = self.updated_location();
+        if next.line != operator.line {
+            self.operator_lines.push((next, operator.line));
+        }
+    }
+
     fn block(&mut self) -> Status<Block> {
         let mut vars = Vec::new();
         let result = if let Some(()) = self.exact(Token!['{'])? {
@@ -1552,7 +1707,9 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
                 } else if let Some(()) = self.exact(Token![;])? {
                     continue;
                 } else {
-                    statements.push(require!(self.statement(&mut vars)));
+                    let statement = require!(self.statement(&mut vars));
+                    self.note_next_line(statement.location);
+                    statements.push(statement);
                 }
             }
             statements
@@ -1562,6 +1719,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
         } else {
             // and one-line blocks: if(1) neat();
             let statement = require!(self.statement(&mut vars));
+            self.note_next_line(statement.location);
             vec![statement]
         };
         for (loc, var_type, name) in vars {
@@ -1583,6 +1741,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             require!(self.exact(Token!['(']));
             let expr = Spanned::new(self.location(), require!(self.expression()));
             require!(self.exact(Token![')']));
+            self.note_end(expr.location);
             let block = require!(self.block());
             let mut arms = vec![(expr, block)];
 
@@ -1593,6 +1752,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
                     require!(self.exact(Token!['(']));
                     let expr = Spanned::new(self.location(), require!(self.expression()));
                     require!(self.exact(Token![')']));
+                    self.note_end(expr.location);
                     let block = require!(self.block());
                     arms.push((expr, block));
                 } else {
@@ -1608,6 +1768,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             require!(self.exact(Token!['(']));
             let condition = Spanned::new(self.location, require!(self.expression()));
             require!(self.exact(Token![')']));
+            self.note_end(condition.location);
             let block = require!(self.block());
             spanned(Statement::While {
                 condition: Box::new(condition),
@@ -2286,6 +2447,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             }
 
             self.take();
+            self.note_operator();
 
             // trampoline high-strength expression parts as the lhs of the newly found op
             expr = require!(self.expression_part(
@@ -2324,6 +2486,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
                 Ordering::Less => {
                     // the operator is stronger than us... recurse down
                     self.take();
+                    self.note_operator();
                     rhs = require!(self.expression_part(
                         rhs,
                         info,
@@ -2338,6 +2501,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
                 Ordering::Equal => {
                     // the same strength... push it to the list
                     self.take();
+                    self.note_operator();
                     ops.push(info.oper);
                     bits.push(rhs);
                     rhs = require!(self.group(in_ternary));
@@ -2781,6 +2945,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             },
             _ => return try_another(),
         });
+        self.note_end(start);
         success(Spanned::new(start, term))
     }
 
@@ -2877,6 +3042,7 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
                 }
             },
         };
+        self.note_end(first_location);
         success(Spanned::new(first_location, follow))
     }
 
@@ -3009,15 +3175,16 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
         if self.peek() == &Token::Eof {
             return try_another();
         }
-        let start = self.take();
-        let kind = TTKind::from_token(&start);
-        target.push(LocatedToken::new(self.location(), start));
+        let start = self.take_located();
+        let kind = TTKind::from_token(&start.token);
+        target.push(start);
         let Some(kind) = kind else { return SUCCESS };
         let location = self.location;
         loop {
             self.expected(kind.end());
             if kind.is_end(self.peek()) {
-                target.push(LocatedToken::new(self.location(), self.take()));
+                let end = self.take_located();
+                target.push(end);
                 return SUCCESS;
             } else {
                 self.skipping_location = Some(location);

@@ -125,6 +125,8 @@ impl DefineHistory {
             danger_idents: Default::default(),
             docs_in: Default::default(),
             in_interp_string: 0,
+            empty_watch: None,
+            output_count: 0,
             annotations: None,
         }
     }
@@ -150,6 +152,8 @@ impl DefineHistory {
             danger_idents: Default::default(),
             docs_in: Default::default(),
             in_interp_string: 0,
+            empty_watch: None,
+            output_count: 0,
             annotations: None,
         }
     }
@@ -321,6 +325,18 @@ impl<'ctx> IncludeStack<'ctx> {
     fn in_expansion(&self) -> bool {
         matches!(self.stack.last(), Some(Include::Expansion { .. }))
     }
+
+    /// Whether every expansion above the innermost file has been read.
+    fn expansions_read(&self) -> bool {
+        for each in self.stack.iter().rev() {
+            match each {
+                Include::Expansion { tokens, .. } if tokens.is_empty() => {},
+                Include::Expansion { .. } => return false,
+                Include::File { .. } => return true,
+            }
+        }
+        true
+    }
 }
 
 impl<'ctx> Iterator for IncludeStack<'ctx> {
@@ -413,6 +429,11 @@ pub struct Preprocessor<'ctx> {
     danger_idents: HashMap<Ident, Location>,
     in_interp_string: u32,
 
+    /// Source invocation location and output count at the start of each macro expansion.
+    empty_watch: Option<(Location, u64)>,
+    /// Number of non-whitespace output tokens.
+    output_count: u64,
+
     docs_in: VecDeque<(Location, DocComment)>,
 }
 
@@ -454,6 +475,8 @@ impl<'ctx> Preprocessor<'ctx> {
             danger_idents: Default::default(),
             docs_in: Default::default(),
             in_interp_string: 0,
+            empty_watch: None,
+            output_count: 0,
             annotations: None,
         })
     }
@@ -489,6 +512,8 @@ impl<'ctx> Preprocessor<'ctx> {
             danger_idents: Default::default(),
             docs_in: Default::default(),
             in_interp_string: 0,
+            empty_watch: None,
+            output_count: 0,
             annotations: None,
         }
     }
@@ -515,6 +540,11 @@ impl<'ctx> Preprocessor<'ctx> {
             last_input_loc: self.last_input_loc,
             tree: self.history,
         }
+    }
+
+    /// Included `.dmf` files in order; the last is the world's skin.
+    pub fn skins(&self) -> &[PathBuf] {
+        &self.skins
     }
 
     /// Access the ifdef history.
@@ -770,6 +800,9 @@ impl<'ctx> Preprocessor<'ctx> {
         let disabled = !inside_condition && self.is_disabled();
         match read {
             Token![#] => {
+                if !self.include_stack.in_expansion() {
+                    self.context.note_directive(self.last_input_loc);
+                }
                 // preprocessor directive, next thing ought to be an ident
                 expect_token!(Token::Ident(ident, _));
                 match &ident[..] {
@@ -1113,6 +1146,9 @@ impl<'ctx> Preprocessor<'ctx> {
             // identifiers may be macros
             Token::Ident(ref ident, whitespace) => {
                 self.flush_docs();
+                // Only source invocations, excluding nested expansions.
+                let used_at = (!inside_condition && !self.include_stack.in_expansion())
+                    .then_some(self.last_input_loc);
 
                 // lint for BYOND bug
                 if self.in_interp_string > 0 {
@@ -1185,6 +1221,9 @@ impl<'ctx> Preprocessor<'ctx> {
                         subst,
                     }) if params.is_empty() => {
                         self.annotate_macro(ident, location, Some(docs));
+                        if let Some(at) = used_at {
+                            self.empty_watch = Some((at, self.output_count));
+                        }
                         self.include_stack.stack.push(Include::Expansion {
                             //name: ident.to_owned(),
                             tokens: subst.into_iter().collect(),
@@ -1458,6 +1497,12 @@ impl<'ctx> Preprocessor<'ctx> {
                                 _ => expansion.push_back(token),
                             }
                         }
+                        if let Some(at) = used_at {
+                            self.empty_watch = Some((at, self.output_count));
+                            if at.line != self.last_input_loc.line {
+                                self.context.note_macro_start(at);
+                            }
+                        }
                         self.include_stack.stack.push(Include::Expansion {
                             //name: ident.to_owned(),
                             tokens: expansion,
@@ -1533,10 +1578,26 @@ impl<'ctx> Iterator for Preprocessor<'ctx> {
     fn next(&mut self) -> Option<LocatedToken> {
         loop {
             if let Some(token) = self.output.pop_front() {
+                if !token.token.is_whitespace() {
+                    self.output_count += 1;
+                }
                 return Some(token);
             }
 
+            // An empty macro expansion still counts as a proc body's first debug line.
+            if let Some((at, count)) = self.empty_watch {
+                if self.include_stack.expansions_read() {
+                    if count == self.output_count {
+                        self.context.note_macro_start(at);
+                    }
+                    self.empty_watch = None;
+                }
+            }
+
             if let Some(tok) = self.inner_next() {
+                if matches!(tok.token, Token::InterpStringEnd(_)) && tok.end.line > tok.start.line {
+                    self.context.note_token_end(tok.start, tok.end.line);
+                }
                 // linting for https://www.byond.com/forum/?post=2072419
                 if !tok.token.is_whitespace() && tok.token != Token![#] {
                     if tok.start.file != self.last_printable_input_loc.file
