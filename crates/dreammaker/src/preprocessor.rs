@@ -517,6 +517,11 @@ impl<'ctx> Preprocessor<'ctx> {
         }
     }
 
+    /// Included `.dmf` files in order; the last is the world's skin.
+    pub fn skins(&self) -> &[PathBuf] {
+        &self.skins
+    }
+
     /// Access the ifdef history.
     pub fn ifdef_history(&self) -> &IntervalTree<Location, bool> {
         &self.ifdef_history
