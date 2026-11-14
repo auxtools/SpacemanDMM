@@ -53,6 +53,11 @@ pub struct Context {
     clamp_integer_literals: Cell<bool>,
     /// See [`Context::first_macro_start`].
     macro_starts: RefCell<std::collections::BTreeSet<Location>>,
+    /// Where each preprocessor directive starts.
+    directives: RefCell<std::collections::BTreeSet<Location>>,
+    /// End lines of multiline tokens, indexed by start location. For interpolated
+    /// text, only the final segment is recorded.
+    token_ends: RefCell<std::collections::BTreeMap<Location, u32>>,
 }
 
 impl FileList {
@@ -362,6 +367,26 @@ impl Context {
     /// located at the closing parenthesis, as in DreamMaker's `__LINE__`.
     pub fn first_macro_start(&self, range: std::ops::Range<Location>) -> Option<Location> {
         self.macro_starts.borrow().range(range).next().copied()
+    }
+
+    /// Record the end line of a multiline token.
+    pub(crate) fn note_token_end(&self, start: Location, line: u32) {
+        self.token_ends.borrow_mut().insert(start, line);
+    }
+
+    /// End line of the token at `start`, if it spans multiple lines.
+    pub fn token_end(&self, start: Location) -> Option<u32> {
+        self.token_ends.borrow().get(&start).copied()
+    }
+
+    /// Record where a preprocessor directive starts.
+    pub(crate) fn note_directive(&self, at: Location) {
+        self.directives.borrow_mut().insert(at);
+    }
+
+    /// First preprocessor directive in `range`.
+    pub fn first_directive(&self, range: std::ops::Range<Location>) -> Option<Location> {
+        self.directives.borrow().range(range).next().copied()
     }
 
     /// Push an error or other diagnostic to the context.

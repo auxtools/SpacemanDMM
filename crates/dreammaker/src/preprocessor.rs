@@ -800,6 +800,9 @@ impl<'ctx> Preprocessor<'ctx> {
         let disabled = !inside_condition && self.is_disabled();
         match read {
             Token![#] => {
+                if !self.include_stack.in_expansion() {
+                    self.context.note_directive(self.last_input_loc);
+                }
                 // preprocessor directive, next thing ought to be an ident
                 expect_token!(Token::Ident(ident, _));
                 match &ident[..] {
@@ -1592,6 +1595,9 @@ impl<'ctx> Iterator for Preprocessor<'ctx> {
             }
 
             if let Some(tok) = self.inner_next() {
+                if matches!(tok.token, Token::InterpStringEnd(_)) && tok.end.line > tok.start.line {
+                    self.context.note_token_end(tok.start, tok.end.line);
+                }
                 // linting for https://www.byond.com/forum/?post=2072419
                 if !tok.token.is_whitespace() && tok.token != Token![#] {
                     if tok.start.file != self.last_printable_input_loc.file

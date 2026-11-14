@@ -547,3 +547,39 @@ fn proc_first_line() {
         },
     );
 }
+
+#[test]
+fn proc_lines_read_on() {
+    // Debug locations include source lookahead, multiline constructs and operators.
+    with_code(
+        "
+#define EMPTY
+/proc/p(x)
+\tvar/s = \"[x]\"
+\tEMPTY
+\tif(f(1,
+\t\t2))
+\t\tf(b = 2,
+\t\t\tc = 3)
+#if 0
+\t\tf(9)
+#endif
+\t/// doc
+\tx = x + \\
+\t\t1
+\tx = {\"a
+[x]
+b\"}
+",
+        |_, tree| {
+            let v = &tree.root().get().procs["p"].value[0];
+            let lines = |table: &[(Location, u32)]| {
+                table.iter().map(|(l, n)| (l.line, *n)).collect::<Vec<_>>()
+            };
+            assert_eq!(lines(&v.next_lines), [(3, 4), (5, 9), (7, 9), (13, 15)]);
+            // Condition parentheses and initializer calls retain their end locations.
+            assert_eq!(lines(&v.end_lines), [(5, 6), (5, 6), (7, 8), (15, 17)]);
+            assert_eq!(lines(&v.operator_lines), [(14, 13)]);
+        },
+    );
+}

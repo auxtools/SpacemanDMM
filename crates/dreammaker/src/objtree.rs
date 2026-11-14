@@ -106,6 +106,15 @@ pub struct ProcValue {
     /// header, including a macro that expands to nothing. An empty body uses
     /// the next such line after it.
     pub first_line: Option<u32>,
+    /// Next nonempty line after each statement, indexed by statement location.
+    /// Includes directives and macros that expand to nothing.
+    pub next_lines: Box<[(Location, u32)]>,
+    /// End lines of multiline terms, dot follows (including arguments), and
+    /// `if`/`while` conditions, indexed by start location.
+    pub end_lines: Box<[(Location, u32)]>,
+    /// Binary operator lines, indexed by the following operand's location.
+    /// Includes operators at the end of the previous line.
+    pub operator_lines: Box<[(Location, u32)]>,
 }
 
 #[derive(Debug, Default, GetSize)]
@@ -1246,6 +1255,9 @@ impl ObjectTreeBuilder {
             code,
             body_range,
             first_line: None,
+            next_lines: Box::new([]),
+            end_lines: Box::new([]),
+            operator_lines: Box::new([]),
         };
 
         // DM really does reorder the declaration to appear before the override,
