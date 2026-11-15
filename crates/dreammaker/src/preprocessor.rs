@@ -547,6 +547,11 @@ impl<'ctx> Preprocessor<'ctx> {
         &self.skins
     }
 
+    /// Included `.dmm` paths in preprocessor order.
+    pub fn maps(&self) -> &[PathBuf] {
+        &self.maps
+    }
+
     /// Access the ifdef history.
     pub fn ifdef_history(&self) -> &IntervalTree<Location, bool> {
         &self.ifdef_history
