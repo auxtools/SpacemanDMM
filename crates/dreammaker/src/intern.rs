@@ -682,6 +682,7 @@ dreammaker_macros::static_strings! {
     "operator|",
     "operator|=",
     "operator~",
+    "operator~!",
     "operator~=",
     "options",
     "Options",

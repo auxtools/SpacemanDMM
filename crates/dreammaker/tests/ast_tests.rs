@@ -350,6 +350,24 @@ fn proc_operator_slash() {
 }
 
 #[test]
+fn proc_operator_equivalence() {
+    with_code(
+        "
+/datum/proc/operator~=(other)
+/datum/proc/operator~!(other)
+/datum/proc/after()
+    ",
+        |context, tree| {
+            context.assert_success();
+
+            tree.expect("/datum").get_proc("operator~=").unwrap();
+            tree.expect("/datum").get_proc("operator~!").unwrap();
+            tree.expect("/datum").get_proc("after").unwrap();
+        },
+    );
+}
+
+#[test]
 fn for_key_value_with_as() {
     // https://github.com/SpaceManiac/SpacemanDMM/issues/421 - 'as' keyword in for-key-value loops
     with_code(
