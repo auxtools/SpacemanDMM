@@ -1276,6 +1276,8 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
             Ok(Some(ident!("operator~")))
         } else if self.exact(Token![~=])?.is_some() {
             Ok(Some(ident!("operator~=")))
+        } else if self.exact(Token![~!])?.is_some() {
+            Ok(Some(ident!("operator~!")))
         } else if self.exact(Token![:=])?.is_some() {
             Ok(Some(ident!("operator:=")))
         } else if self.exact(Token!['['])?.is_some() {
